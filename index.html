@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Leaflet.Path.Transform – README API Working</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map-canvas { height: 100%; }
+    /* make handles obvious */
+    .leaflet-path-transform-handler { fill:#fff; stroke:#111; stroke-width:2px; }
+    .leaflet-path-transform-box { stroke:#111; stroke-dasharray:6 4; stroke-width:2px; fill:none; }
+  </style>
+</head>
+<body>
+  <div id="map-canvas"></div>
+
+  <!-- Load Leaflet first -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Then the Path.Transform plugin -->
+  <script src="https://unpkg.com/leaflet-path-transform@1.1.3/dist/L.Path.Transform.js"></script>
+  <!-- Then the Path.Drag plugin -->
+  <script src="https://unpkg.com/leaflet-path-drag@1.0.0/dist/L.Path.Drag.js"></script>
+
+  <script>
+    // Define center/zoom used in your snippet
+    const center = [51.505, -0.09];
+    const zoom   = 14;
+
+    // Force SVG renderer so transform handles render
+    const renderer = L.svg();
+
+    // Your README-style init with panning enabled:
+    var map = L.map('map-canvas', { 
+      renderer,
+      dragging: true,        // Enable map dragging/panning
+      touchZoom: true,       // Enable touch zoom
+      doubleClickZoom: true, // Enable double-click zoom
+      scrollWheelZoom: true, // Enable scroll wheel zoom
+      boxZoom: true,         // Enable box zoom
+      keyboard: true,       // Enable keyboard navigation
+      zoomControl: true      // Show zoom controls
+    }).setView(center, zoom);
+
+    // Base layer (optional, just to see context)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    // A simple polygon with both transform and drag capabilities
+    var polygon = L.polygon(
+      [
+        [51.506, -0.091],
+        [51.506, -0.081],
+        [51.500, -0.081],
+        [51.500, -0.091]
+      ],
+      { 
+        transform: true, 
+        draggable: true,  // Enable dragging
+        color:'#3388ff', 
+        weight:2, 
+        fillOpacity:0.2, 
+        renderer 
+      }
+    ).addTo(map);
+
+    // Enable transform functionality
+    polygon.transform.enable(); // enable all by default
+
+    // or partially:
+    // polygon.transform.enable({ rotation: true, scaling: false });
+
+    // or, on an already-enabled handler:
+    polygon.transform.setOptions({ rotation: true, scaling: true});
+
+    // Enable dragging functionality
+    polygon.dragging.enable();
+
+    // Drag event handlers
+    polygon
+      .on('dragstart', function(e) {
+        // Disable map dragging while polygon is being dragged
+        map.dragging.disable();
+        // Visual feedback
+        polygon.setStyle({ opacity: 0.7 });
+      })
+      .on('drag', function(e) {
+        // Real-time updates can be added here
+      })
+      .on('dragend', function(e) {
+        // Re-enable map dragging after polygon drag ends
+        map.dragging.enable();
+        // Reset visual feedback
+        polygon.setStyle({ opacity: 1 });
+      });
+
+    // Transform event handlers
+    polygon.on('transformstart', function(e) {
+      // Disable map dragging while transforming
+      map.dragging.disable();
+    });
+    
+    polygon.on('transform', function(e) {
+      // Transform updates can be added here
+    });
+    
+    polygon.on('transformend', function(e) {
+      // Re-enable map dragging after transform ends
+      map.dragging.enable();
+    });
+
+    // Demo: change geometry, then realign handles with reset()
+    // setTimeout(() => {
+    //   polygon.setLatLngs([
+    //     [51.507, -0.092],
+    //     [51.507, -0.078],
+    //     [51.499, -0.078],
+    //     [51.499, -0.092]
+    //   ]);
+    //   polygon.transform.reset();
+    // }, 2000);
+
+    // Map interaction event handlers
+    map.on('dragstart', function(e) {
+      // Map drag started
+    });
+    
+    map.on('drag', function(e) {
+      // Map dragging
+    });
+    
+    map.on('dragend', function(e) {
+      // Map drag ended
+    });
+    
+    map.on('zoomend', function(e) {
+      // Map zoom ended
+    });
+    
+    // You can enable/disable map dragging programmatically:
+    // map.dragging.enable();
+    // map.dragging.disable();
+    
+    // You can enable/disable polygon dragging programmatically:
+    // polygon.dragging.enable();
+    // polygon.dragging.disable();
+  </script>
+</body>
+</html>
