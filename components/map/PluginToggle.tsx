@@ -1,7 +1,7 @@
 'use client';
 
-import ImageOverlay from './ImageOverlay';
-import VectorLayer from './VectorLayer';
+import ImageOverlay from './Image/ImageOverlay';
+import VectorLayer from './Vector/VectorLayer';
 
 interface PluginToggleProps {
   map: any;
@@ -13,13 +13,9 @@ interface PluginToggleProps {
 
 export default function PluginToggle({ map, L, imageData, vectorData, imageUrl }: PluginToggleProps) {
   // Determine which component to render based on available data
-  const hasImage = imageData && imageUrl;
+  const hasImage = imageData && imageUrl && imageData.fileName?.match(/\.(jpg|jpeg|png|gif|bmp|tiff|webp)$/i);
   const hasVector = vectorData && (vectorData.geoJsonUrl || vectorData.geoJsonData || 
     (vectorData.url && vectorData.fileName?.match(/\.(dxf|geojson)$/i)));
-
-  console.log('PluginToggle - Props received:', { map: !!map, L: !!L, imageData, vectorData, imageUrl });
-  console.log('PluginToggle - hasImage:', hasImage, 'hasVector:', hasVector);
-  console.log('PluginToggle - vectorData details:', vectorData);
 
   // Render both ImageOverlay and VectorLayer based on available data
   return (

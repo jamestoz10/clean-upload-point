@@ -2,7 +2,13 @@
 
 import { useEffect, useRef } from 'react';
 
-export default function ImageOverlay({ map, imageUrl, imageData, L }: { map: any; imageUrl: string; imageData?: any; L?: any }) {
+export default function ImageOverlay({ map, imageUrl, imageData, L, postcodeCoordinates }: { 
+  map: any; 
+  imageUrl: string; 
+  imageData?: any; 
+  L?: any;
+  postcodeCoordinates?: { lat: number; lng: number };
+}) {
   const currentImageRef = useRef<any>(null);
 
   useEffect(() => {
@@ -22,13 +28,14 @@ export default function ImageOverlay({ map, imageUrl, imageData, L }: { map: any
         }
         
         if (!LeafletInstance || typeof LeafletInstance.distortableImageOverlay !== 'function') {
+          console.warn('ImageOverlay - leaflet-distortableimage plugin not available, skipping image overlay');
           return;
         }
         
         if (disposed) return;
 
-        // Wait for map to be fully ready
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Wait for map to be ready (no need to wait for centering)
+        await new Promise(resolve => setTimeout(resolve, 100));
         
         if (disposed) return;
 
@@ -44,25 +51,34 @@ export default function ImageOverlay({ map, imageUrl, imageData, L }: { map: any
           currentImageRef.current = null;
         }
 
-        // Get placement coordinates - use postcode coordinates if available, otherwise use map center
+        // Get placement coordinates - use passed postcode coordinates directly
         let center, zoom;
         try {
-          if (imageData && imageData.postcodeCoordinates) {
-            // Use postcode coordinates for image placement
+          console.log('ImageOverlay - Starting coordinate detection...');
+          console.log('ImageOverlay - postcodeCoordinates prop:', postcodeCoordinates);
+          
+          if (postcodeCoordinates) {
+            // Use the passed postcode coordinates directly
             center = {
-              lat: imageData.postcodeCoordinates.lat,
-              lng: imageData.postcodeCoordinates.lng
+              lat: postcodeCoordinates.lat,
+              lng: postcodeCoordinates.lng
             };
-            zoom = map.getZoom();
+            zoom = 15; // Use postcode zoom level
+            console.log('ImageOverlay - Using passed postcode coordinates:', center);
           } else {
+            console.log('ImageOverlay - No postcode coordinates passed, using map center...');
             // Fallback to map center
             center = map.getCenter();
             zoom = map.getZoom();
+            console.log('ImageOverlay - Using map center:', center);
           }
         } catch (error) {
+          console.log('ImageOverlay - Coordinate detection error:', error);
           center = { lat: 0, lng: 0 };
           zoom = 2;
         }
+        
+        console.log('ImageOverlay - Final coordinates for image placement:', { center, zoom });
         
         // Create image overlay
         let img: any;
@@ -137,7 +153,7 @@ export default function ImageOverlay({ map, imageUrl, imageData, L }: { map: any
         currentImageRef.current = null;
       }
     };
-  }, [map, imageUrl, imageData]);
+  }, [map, imageUrl, imageData, postcodeCoordinates]);
 
   return null;
 }
