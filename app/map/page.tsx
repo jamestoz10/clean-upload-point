@@ -27,8 +27,11 @@ export default function MapPage() {
       <ClientOnly fallback={<div className="h-full w-full flex items-center justify-center">Loading map...</div>}>
         <MapContainer 
           className="h-full w-full" 
-          center={mapState.center}
-          zoom={mapState.zoom}
+          center={state.imageData?.postcodeCoordinates ? 
+            [state.imageData.postcodeCoordinates.lat, state.imageData.postcodeCoordinates.lng] : 
+            mapState.center
+          }
+          zoom={state.imageData?.postcodeCoordinates ? 15 : mapState.zoom}
           fileType={state.fileType}
           onMapReady={actions.handleMapReady}
         />
@@ -43,6 +46,8 @@ export default function MapPage() {
               imageData={state.imageData}
               vectorData={state.vectorData}
               imageUrl={state.imageUrl || undefined}
+              combinedLineData={state.combinedLineData}
+              cleanedData={state.cleanedData}
             />
             {state.unionedGeoJsonData && (
               <TurfFlatten 
@@ -52,6 +57,8 @@ export default function MapPage() {
                 onFlattenComplete={actions.handleFlattenComplete}
               />
             )}
+            
+            {/* Line-only processing is now handled directly in useMapPageState */}
           </>
         )}
       </ClientOnly>

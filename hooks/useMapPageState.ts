@@ -12,12 +12,16 @@ interface MapPageState {
   mapInstance: any;
   leafletInstance: any;
   fileType: 'image' | 'vector' | 'both' | 'none';
+  combinedLineData: any;
+  cleanedData: any;
 }
 
 interface MapPageActions {
   handleMapReady: (map: any, L: any) => void;
   handleFlattenComplete: (flattenedResult: any) => void;
   isMapReadyForLayers: () => boolean;
+  setCombinedLineData: (data: any) => void;
+  setCleanedData: (data: any) => void;
 }
 
 export function useMapPageState() {
@@ -28,6 +32,8 @@ export function useMapPageState() {
   const [unionedGeoJsonData, setUnionedGeoJsonData] = useState<any>(null);
   const [flattenedGeoJsonData, setFlattenedGeoJsonData] = useState<any>(null);
   const [processedImageId, setProcessedImageId] = useState<string | null>(null);
+  const [combinedLineData, setCombinedLineData] = useState<any>(null);
+  const [cleanedData, setCleanedData] = useState<any>(null);
   const [mapInstance, setMapInstance] = useState<any>(null);
   const [leafletInstance, setLeafletInstance] = useState<any>(null);
   const [fileType, setFileType] = useState<'image' | 'vector' | 'both' | 'none'>('none');
@@ -117,12 +123,170 @@ export function useMapPageState() {
               }
               
               if (geoJsonData) {
-                const { processOverlappingPolygons } = await import('@/utils/polygonVisibility');
-                const processedGeoJsonData = processOverlappingPolygons(geoJsonData, {
-                  orderBy: 'z',
-                  minCoveredPct: 10,
-                  clipRemainder: true
-                });
+                // Check if user selected "No" for vector quality (line-only processing)
+                const vectorQualitySelection = localStorage.getItem('vector-quality-selection');
+                const isLineOnly = vectorQualitySelection === 'false';
+                
+                let processedGeoJsonData: any;
+                
+                if (isLineOnly) {
+                  // Skip polygon processing, use raw GeoJSON for line-only processing
+                  console.log('Line-only mode: Skipping polygon visibility processing');
+                  processedGeoJsonData = geoJsonData;
+                  
+                  // Process line-only data immediately
+                  const processLineOnlyData = async () => {
+                    try {
+                      // Filter out polygons, keep only LineString features
+                      const lineOnlyFeatures = processedGeoJsonData.features.filter((feature: any) => 
+                        feature.geometry && feature.geometry.type === 'LineString'
+                      );
+
+                      console.log(`Filtered from ${processedGeoJsonData.features.length} to ${lineOnlyFeatures.length} LineString features`);
+
+                      if (lineOnlyFeatures.length === 0) {
+                        console.warn('No LineString features found for line-only processing');
+                        return;
+                      }
+
+                      // Combine LineStrings into MultiLineString
+                      const { combine, flatten, featureCollection } = await import('@turf/turf');
+                      
+                      // For large datasets, process in batches
+                      const BATCH_SIZE = 1000;
+                      const allCoordinates: number[][][] = [];
+                      
+                      if (lineOnlyFeatures.length > BATCH_SIZE) {
+                        console.log(`Large dataset detected (${lineOnlyFeatures.length} features), processing in batches of ${BATCH_SIZE}`);
+                        
+                        for (let i = 0; i < lineOnlyFeatures.length; i += BATCH_SIZE) {
+                          const batch = lineOnlyFeatures.slice(i, i + BATCH_SIZE);
+                          console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(lineOnlyFeatures.length / BATCH_SIZE)}`);
+                          
+                          try {
+                            const batchCombined = combine(batch);
+                            if (batchCombined && batchCombined.features && batchCombined.features.length > 0) {
+                              batchCombined.features.forEach((feature: any) => {
+                                if (feature.geometry.type === 'MultiLineString') {
+                                  allCoordinates.push(...feature.geometry.coordinates);
+                                } else if (feature.geometry.type === 'LineString') {
+                                  allCoordinates.push(feature.geometry.coordinates);
+                                }
+                              });
+                            } else {
+                              // Fallback: extract coordinates directly
+                              batch.forEach((feature: any) => {
+                                if (feature.geometry && feature.geometry.type === 'LineString' && feature.geometry.coordinates) {
+                                  allCoordinates.push(feature.geometry.coordinates);
+                                }
+                              });
+                            }
+                          } catch (batchError) {
+                            console.warn(`Batch ${Math.floor(i / BATCH_SIZE) + 1} failed, using fallback:`, batchError);
+                            batch.forEach((feature: any) => {
+                              if (feature.geometry && feature.geometry.type === 'LineString' && feature.geometry.coordinates) {
+                                allCoordinates.push(feature.geometry.coordinates);
+                              }
+                            });
+                          }
+                        }
+                      } else {
+                        // For smaller datasets, use turf.combine normally
+                        try {
+                          const combined = combine(lineOnlyFeatures);
+                          if (combined && combined.features && combined.features.length > 0) {
+                            combined.features.forEach((feature: any) => {
+                              if (feature.geometry.type === 'MultiLineString') {
+                                allCoordinates.push(...feature.geometry.coordinates);
+                              } else if (feature.geometry.type === 'LineString') {
+                                allCoordinates.push(feature.geometry.coordinates);
+                              }
+                            });
+                          } else {
+                            // Fallback: extract coordinates directly
+                            lineOnlyFeatures.forEach((feature: any) => {
+                              if (feature.geometry && feature.geometry.type === 'LineString' && feature.geometry.coordinates) {
+                                allCoordinates.push(feature.geometry.coordinates);
+                              }
+                            });
+                          }
+                        } catch (combineError) {
+                          console.warn('turf.combine failed, using fallback:', combineError);
+                          lineOnlyFeatures.forEach((feature: any) => {
+                            if (feature.geometry && feature.geometry.type === 'LineString' && feature.geometry.coordinates) {
+                              allCoordinates.push(feature.geometry.coordinates);
+                            }
+                          });
+                        }
+                      }
+
+                      if (allCoordinates.length === 0) {
+                        console.warn('No valid LineString coordinates found');
+                        return;
+                      }
+
+                      // Create single MultiLineString feature
+                      const combinedLineData = {
+                        type: 'FeatureCollection',
+                        features: [{
+                          type: 'Feature',
+                          geometry: {
+                            type: 'MultiLineString',
+                            coordinates: allCoordinates
+                          },
+                          properties: {}
+                        }]
+                      };
+
+                      console.log('Created combined MultiLineString with', allCoordinates.length, 'line segments');
+                      
+                      // Clean the combined line data with turf.cleanCoords (designed for all geometry types)
+                      const { cleanCoords } = await import('@turf/turf');
+                      
+                      try {
+                        const cleanedFeature = cleanCoords(combinedLineData.features[0]);
+                        
+                        const cleanedData = {
+                          type: 'FeatureCollection',
+                          features: [cleanedFeature]
+                        };
+                        
+                        console.log('Line data cleaned successfully with turf.cleanCoords');
+                        
+                        // Set both the combined and cleaned line data
+                        console.log('Setting combinedLineData:', combinedLineData);
+                        setCombinedLineData(combinedLineData);
+                        console.log('Setting cleanedData:', cleanedData);
+                        setCleanedData(cleanedData);
+                      } catch (cleanError) {
+                        console.warn('Error cleaning line data with turf.cleanCoords, using original:', cleanError);
+                        // Fallback to original combined data
+                        setCombinedLineData(combinedLineData);
+                        setCleanedData(combinedLineData);
+                      }
+                      
+                    } catch (error) {
+                      console.error('Error processing line-only data:', error);
+                    }
+                  };
+
+                  // Process the line-only data and wait for completion
+                  await processLineOnlyData();
+                  
+                  // Don't set unionedGeoJsonData - we're using combinedLineData instead
+                  return;
+                } else {
+                  // Normal polygon processing flow - clear any leftover line-only data
+                  localStorage.removeItem('temp-line-data');
+                  localStorage.removeItem('combined-line-data');
+                  
+                  const { processOverlappingPolygons } = await import('@/utils/polygonVisibility');
+                  processedGeoJsonData = processOverlappingPolygons(geoJsonData, {
+                    orderBy: 'z',
+                    minCoveredPct: 10,
+                    clipRemainder: true
+                  });
+                }
                 
                 const polygonFeatures = processedGeoJsonData.features.filter((feature: any) => 
                   feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon'
@@ -178,6 +342,21 @@ export function useMapPageState() {
     }
   }, []);
 
+  // Load combinedLineData from localStorage
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
+    const storedCombinedLineData = localStorage.getItem('combined-line-data');
+    if (storedCombinedLineData) {
+      try {
+        const parsedData = JSON.parse(storedCombinedLineData);
+        setCombinedLineData(parsedData);
+      } catch (error) {
+        console.error('Error parsing combined line data from localStorage:', error);
+      }
+    }
+  }, []);
+
   // Return state and actions
   const state: MapPageState = {
     imageUrl,
@@ -188,13 +367,17 @@ export function useMapPageState() {
     processedImageId,
     mapInstance,
     leafletInstance,
-    fileType
+    fileType,
+    combinedLineData,
+    cleanedData
   };
 
   const actions: MapPageActions = {
     handleMapReady,
     handleFlattenComplete,
-    isMapReadyForLayers
+    isMapReadyForLayers,
+    setCombinedLineData,
+    setCleanedData
   };
 
   return { state, actions };

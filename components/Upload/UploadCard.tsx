@@ -7,6 +7,8 @@ interface UploadCardProps {
   onImageFilesChange?: (hasImageFiles: boolean) => void;
   onVectorFilesChange?: (hasVectorFiles: boolean) => void;
   onUploadedFilesChange?: (count: number) => void;
+  onDwgDxfFilesChange?: (hasDwgDxfFiles: boolean) => void;
+  isVectorClean?: boolean | null;
 }
 
 interface UploadResult {
@@ -22,7 +24,7 @@ interface UploadResult {
   convertedToGeoJSON?: boolean;
 }
 
-export default function UploadCard({ fileType = '', onImageFilesChange, onVectorFilesChange, onUploadedFilesChange }: UploadCardProps) {
+export default function UploadCard({ fileType = '', onImageFilesChange, onVectorFilesChange, onUploadedFilesChange, onDwgDxfFilesChange, isVectorClean }: UploadCardProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<Set<string>>(new Set());
@@ -39,7 +41,10 @@ export default function UploadCard({ fileType = '', onImageFilesChange, onVector
     if (onUploadedFilesChange) {
       onUploadedFilesChange(0);
     }
-  }, [fileType, onImageFilesChange, onVectorFilesChange, onUploadedFilesChange]);
+    if (onDwgDxfFilesChange) {
+      onDwgDxfFilesChange(false);
+    }
+  }, [fileType, onImageFilesChange, onVectorFilesChange, onUploadedFilesChange, onDwgDxfFilesChange]);
 
   // Notify parent when uploaded files count changes
   useEffect(() => {
@@ -93,12 +98,20 @@ export default function UploadCard({ fileType = '', onImageFilesChange, onVector
         /\.(dwg|dxf|geojson|shp|kml)$/i.test(file.name)
       );
       
+      // Check if any of the selected files are DWG/DXF specifically
+      const hasDwgDxfFiles = fileArray.some(file => 
+        /\.(dwg|dxf)$/i.test(file.name)
+      );
+      
       // Notify parent component about file types
       if (onImageFilesChange) {
         onImageFilesChange(hasImageFiles);
       }
       if (onVectorFilesChange) {
         onVectorFilesChange(hasVectorFiles);
+      }
+      if (onDwgDxfFilesChange) {
+        onDwgDxfFilesChange(hasDwgDxfFiles);
       }
       
       // Automatically upload the new files
@@ -165,6 +178,12 @@ export default function UploadCard({ fileType = '', onImageFilesChange, onVector
   const uploadFile = async (file: File): Promise<UploadResult> => {
     const formData = new FormData();
     formData.append('file', file);
+    
+    // Add vector quality parameter for DWG/DXF files
+    const isDwgDxfFile = file.name.toLowerCase().endsWith('.dwg') || file.name.toLowerCase().endsWith('.dxf');
+    if (isDwgDxfFile && isVectorClean !== null && isVectorClean !== undefined) {
+      formData.append('isVectorClean', isVectorClean.toString());
+    }
 
     // Check if it's a DWG file that needs conversion
     const isDwgFile = file.name.toLowerCase().endsWith('.dwg');

@@ -5,9 +5,10 @@ import Link from 'next/link';
 interface ContinueToMapProps {
   isVisible: boolean;
   uploadedCount: number;
+  isVectorClean?: boolean | null;
 }
 
-export default function ContinueToMap({ isVisible, uploadedCount }: ContinueToMapProps) {
+export default function ContinueToMap({ isVisible, uploadedCount, isVectorClean }: ContinueToMapProps) {
   if (!isVisible) {
     return null;
   }

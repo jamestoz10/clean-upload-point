@@ -10,7 +10,7 @@ export default function HomePage() {
           </h1>
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
           <Card 
             href="/upload" 
             title="Upload" 
@@ -21,12 +21,6 @@ export default function HomePage() {
             href="/projects" 
             title="Projects" 
             description="Organize and manage your projects efficiently. Keep everything in one place." 
-          />
-
-          <Card 
-            href="/sample-data" 
-            title="Sample Data" 
-            description="View interactive sample MultiPolygon data with transform handles enabled for testing and demonstration." 
           />
         </div>
       </div>
