@@ -31,6 +31,8 @@ export default function VectorLayer({ map, vectorData, L, combinedLineData, clea
   const [currentGeoJsonData, setCurrentGeoJsonData] = useState<any>(null);
   const [isHandlesLocked, setIsHandlesLocked] = useState<boolean>(false);
   const [flattenedLayers, setFlattenedLayers] = useState<any[]>([]);
+  const [positionedUnionedLayer, setPositionedUnionedLayer] = useState<any>(null);
+  const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
 
   const handleHandlesToggle = (showHandles: boolean) => {
     setIsHandlesLocked(!showHandles);
@@ -47,6 +49,295 @@ export default function VectorLayer({ map, vectorData, L, combinedLineData, clea
     setFlattenedLayers([]);
     // Update layersRef to point to unioned layer
     layersRef.current = [unionLayer];
+    console.log('Union completed: updated layersRef with unioned layer');
+  };
+
+  const addPositionedPolygonsAsSeparateLayers = async (positionedPolygonData: any) => {
+    try {
+      if (!map || !L || !positionedPolygonData) return;
+
+      // Handle array of individual polygons
+      const positionedPolygons = Array.isArray(positionedPolygonData) ? positionedPolygonData : [positionedPolygonData];
+      
+      // Create individual polygon layers for each positioned polygon
+      positionedPolygons.forEach((polygonData: any, index: number) => {
+        if (polygonData && polygonData.geometry && polygonData.geometry.type === 'Polygon') {
+          // Convert GeoJSON coordinates to Leaflet format
+          const latlngs = L.GeoJSON.coordsToLatLngs(polygonData.geometry.coordinates[0]);
+          
+          // Create new individual polygon without handles
+          const newPolygon = L.polygon(latlngs, {
+            color: '#0066cc',
+            weight: 2,
+            opacity: 1.0,
+            fillOpacity: 0.2,
+            lineCap: 'round',
+            lineJoin: 'round',
+            transform: false,  // No transform handles
+            draggable: false   // No dragging
+          }).addTo(map);
+          
+          // Apply crisp rendering CSS
+          if (newPolygon._path) {
+            newPolygon._path.style.vectorEffect = 'non-scaling-stroke';
+            newPolygon._path.style.shapeRendering = 'geometricPrecision';
+            newPolygon._path.style.imageRendering = 'crisp-edges';
+          }
+          
+          // Add to layers reference so PolygonSelector can work with it
+          layersRef.current.push(newPolygon);
+          
+          console.log(`Added positioned polygon ${index + 1} as separate layer`);
+        }
+      });
+      
+      console.log(`Successfully added ${positionedPolygons.length} positioned polygons as separate layers`);
+      
+    } catch (error) {
+      console.error('Error adding positioned polygons as separate layers:', error);
+    }
+  };
+
+  const updateMainLayerWithPositionedPolygon = async (positionedPolygonData: any) => {
+    try {
+      if (!map || !L || !positionedPolygonData) return;
+
+      // Import turf functions
+      const { union, featureCollection } = await import('@turf/turf');
+
+      // Remove all current layers from map first
+      layersRef.current.forEach((layer) => {
+        if (layer.remove) {
+          layer.remove();
+        }
+      });
+
+      // Handle array of individual polygons
+      const positionedPolygons = Array.isArray(positionedPolygonData) ? positionedPolygonData : [positionedPolygonData];
+      
+      // If we have multiple layers (flattened), we need to union them first
+      let mainLayerGeoJson;
+      if (layersRef.current.length > 1) {
+        // Multiple flattened layers - union them first
+        const flattenedFeatures = layersRef.current.map((layer) => {
+          try {
+            return layer.toGeoJSON();
+          } catch (error) {
+            console.error('Error converting layer to GeoJSON:', error);
+            return null;
+          }
+        }).filter(Boolean).filter((feature: any) => 
+          feature && feature.geometry && feature.geometry.type && 
+          (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon')
+        );
+
+        if (flattenedFeatures.length > 0) {
+          const fc = featureCollection(flattenedFeatures as any);
+          const unionResult = union(fc as any);
+          if (unionResult) {
+            mainLayerGeoJson = unionResult;
+          } else {
+            mainLayerGeoJson = layersRef.current[0].toGeoJSON();
+          }
+        } else {
+          mainLayerGeoJson = layersRef.current[0].toGeoJSON();
+        }
+      } else {
+        // Single layer
+        mainLayerGeoJson = layersRef.current[0].toGeoJSON();
+      }
+      
+      // Create feature collection with main layer and positioned polygons
+      const features = [mainLayerGeoJson, ...positionedPolygons].filter((feature: any) => 
+        feature && feature.geometry && feature.geometry.type && 
+        (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon')
+      );
+
+      if (features.length >= 2) {
+        // Union the main layer with the positioned polygon
+        const fc = featureCollection(features as any);
+        const unionResult = union(fc as any);
+        
+        if (unionResult) {
+          // Convert GeoJSON coordinates to Leaflet format
+          const geometry = unionResult.geometry;
+          let latlngs;
+          
+          if (geometry.type === 'MultiPolygon') {
+            latlngs = geometry.coordinates.map((poly: any) => L.GeoJSON.coordsToLatLngs(poly[0]));
+          } else if (geometry.type === 'Polygon') {
+            latlngs = [L.GeoJSON.coordsToLatLngs(geometry.coordinates[0])];
+          } else {
+            console.error('Unexpected geometry type:', (geometry as any).type);
+            return;
+          }
+          
+          // Create new updated main layer WITHOUT handles (just confirm position)
+          // Use the same structure as the original layer to ensure it can be flattened again
+          let updatedMainLayer;
+          
+          if (latlngs.length > 1) {
+            // MultiPolygon - create individual polygons and group them
+            const polygons = latlngs.map((polygonCoords: any) => {
+              return L.polygon(polygonCoords, {
+                color: '#0066cc',
+                weight: 2,
+                opacity: 1.0,
+                fillOpacity: 0.2,
+                lineCap: 'round',
+                lineJoin: 'round',
+                transform: false,  // No transform handles
+                draggable: false   // No dragging
+              });
+            });
+            
+            // Create a feature group to hold all polygons
+            updatedMainLayer = L.featureGroup(polygons).addTo(map);
+          } else {
+            // Single Polygon
+            updatedMainLayer = L.polygon(latlngs[0], {
+              color: '#0066cc',
+              weight: 2,
+              opacity: 1.0,
+              fillOpacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
+              transform: false,  // No transform handles
+              draggable: false   // No dragging
+            }).addTo(map);
+          }
+          
+          // Apply crisp rendering CSS
+          if (updatedMainLayer._path) {
+            // Single polygon case
+            updatedMainLayer._path.style.vectorEffect = 'non-scaling-stroke';
+            updatedMainLayer._path.style.shapeRendering = 'geometricPrecision';
+            updatedMainLayer._path.style.imageRendering = 'crisp-edges';
+          } else if (updatedMainLayer.eachLayer) {
+            // Feature group case - apply CSS to each polygon
+            updatedMainLayer.eachLayer((layer: any) => {
+              if (layer._path) {
+                layer._path.style.vectorEffect = 'non-scaling-stroke';
+                layer._path.style.shapeRendering = 'geometricPrecision';
+                layer._path.style.imageRendering = 'crisp-edges';
+              }
+            });
+          }
+          
+          // Do NOT enable transform handles or dragging - just confirm position
+          
+          // Update the layers reference
+          layersRef.current = [updatedMainLayer];
+          
+          // Re-flatten the layer so PolygonSelector can work with individual polygons
+          await reFlattenLayerForSelection(updatedMainLayer);
+          
+          console.log('Successfully updated main layer with positioned polygon (no handles)');
+        }
+      }
+    } catch (error) {
+      console.error('Error updating main layer with positioned polygon:', error);
+    }
+  };
+
+  const reFlattenLayerForSelection = async (layer: any) => {
+    try {
+      if (!map || !L || !layer) return;
+
+      // Remove the current layer from map
+      layer.remove();
+
+      // Create individual polygon layers from the updated layer
+      const newFlattenedLayers: any[] = [];
+      
+      if (layer.eachLayer) {
+        // Feature group case - extract individual polygons
+        layer.eachLayer((individualLayer: any) => {
+          if (individualLayer.getLatLngs) {
+            const latlngs = individualLayer.getLatLngs();
+            
+            // Create new individual polygon without handles
+            const newPolygon = L.polygon(latlngs, {
+              color: '#0066cc',
+              weight: 2,
+              opacity: 1.0,
+              fillOpacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
+              transform: false,  // No transform handles
+              draggable: false   // No dragging
+            }).addTo(map);
+            
+            // Apply crisp rendering CSS
+            if (newPolygon._path) {
+              newPolygon._path.style.vectorEffect = 'non-scaling-stroke';
+              newPolygon._path.style.shapeRendering = 'geometricPrecision';
+              newPolygon._path.style.imageRendering = 'crisp-edges';
+            }
+            
+            newFlattenedLayers.push(newPolygon);
+          }
+        });
+      } else if (layer.getLatLngs) {
+        // Single polygon case - check if it's multipolygon
+        const latlngs = layer.getLatLngs();
+        
+        if (Array.isArray(latlngs[0])) {
+          // MultiPolygon case - create individual polygons
+          latlngs.forEach((polygonCoords: any) => {
+            const newPolygon = L.polygon(polygonCoords, {
+              color: '#0066cc',
+              weight: 2,
+              opacity: 1.0,
+              fillOpacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
+              transform: false,  // No transform handles
+              draggable: false   // No dragging
+            }).addTo(map);
+            
+            // Apply crisp rendering CSS
+            if (newPolygon._path) {
+              newPolygon._path.style.vectorEffect = 'non-scaling-stroke';
+              newPolygon._path.style.shapeRendering = 'geometricPrecision';
+              newPolygon._path.style.imageRendering = 'crisp-edges';
+            }
+            
+            newFlattenedLayers.push(newPolygon);
+          });
+        } else {
+          // Single polygon case
+          const newPolygon = L.polygon(latlngs, {
+            color: '#0066cc',
+            weight: 2,
+            opacity: 1.0,
+            fillOpacity: 0.2,
+            lineCap: 'round',
+            lineJoin: 'round',
+            transform: false,  // No transform handles
+            draggable: false   // No dragging
+          }).addTo(map);
+          
+          // Apply crisp rendering CSS
+          if (newPolygon._path) {
+            newPolygon._path.style.vectorEffect = 'non-scaling-stroke';
+            newPolygon._path.style.shapeRendering = 'geometricPrecision';
+            newPolygon._path.style.imageRendering = 'crisp-edges';
+          }
+          
+          newFlattenedLayers.push(newPolygon);
+        }
+      }
+      
+      // Update flattened layers and layers reference
+      setFlattenedLayers(newFlattenedLayers);
+      layersRef.current = newFlattenedLayers;
+      
+      console.log(`Re-flattened layer into ${newFlattenedLayers.length} individual polygons for selection`);
+      
+    } catch (error) {
+      console.error('Error re-flattening layer for selection:', error);
+    }
   };
 
   const exportGeoJSON = () => {
@@ -380,28 +671,68 @@ export default function VectorLayer({ map, vectorData, L, combinedLineData, clea
             
             // Create layer
             const isLine = geometry.type.includes('Line');
-            const color = ['#092', '#0066cc', '#cc6600'][(feature.properties?.z || 0) % 3];
+            const color = ['#0066cc', '#0066cc', '#cc6600'][(feature.properties?.z || 0) % 3];
             
             let layer;
             if (isLine) {
               if (geometry.type === 'MultiLineString') {
                 // For MultiLineString, create a single polyline with multiple line segments
-                layer = L.polyline(latlngs, { renderer, color, weight: 3, opacity: 0.9, transform: true, draggable: true }).addTo(map);
+                layer = L.polyline(latlngs, { 
+                  renderer, 
+                  color, 
+                  weight: 2, 
+                  opacity: 1.0, 
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  transform: true, 
+                  draggable: true 
+                }).addTo(map);
               } else {
                 // For single LineString
-                layer = L.polyline(latlngs[0], { renderer, color, weight: 3, opacity: 0.9, transform: true, draggable: true }).addTo(map);
+                layer = L.polyline(latlngs[0], { 
+                  renderer, 
+                  color, 
+                  weight: 2, 
+                  opacity: 1.0, 
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  transform: true, 
+                  draggable: true 
+                }).addTo(map);
               }
             } else {
               if (latlngs.length === 1) {
-                layer = L.polygon(latlngs[0], { renderer, color, weight: 3, opacity: 0.9, fillOpacity: 0.3, transform: true, draggable: true }).addTo(map);
+                layer = L.polygon(latlngs[0], { 
+                  renderer, 
+                  color, 
+                  weight: 2, 
+                  opacity: 1.0, 
+                  fillOpacity: 0.2, 
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  transform: true, 
+                  draggable: true 
+                }).addTo(map);
               } else {
-                layer = L.polygon(latlngs, { renderer, color, weight: 3, opacity: 0.9, fillOpacity: 0.3, transform: true, draggable: true }).addTo(map);
+                layer = L.polygon(latlngs, { 
+                  renderer, 
+                  color, 
+                  weight: 2, 
+                  opacity: 1.0, 
+                  fillOpacity: 0.2, 
+                  lineCap: 'round',
+                  lineJoin: 'round',
+                  transform: true, 
+                  draggable: true 
+                }).addTo(map);
               }
             }
             
-            // Add CSS to prevent stroke scaling
+            // Add CSS to prevent stroke scaling and improve crispness
             if (layer._path) {
               layer._path.style.vectorEffect = 'non-scaling-stroke';
+              layer._path.style.shapeRendering = 'geometricPrecision';
+              layer._path.style.imageRendering = 'crisp-edges';
             }
             
             // Enable transform handles (following the example pattern)
@@ -489,9 +820,10 @@ export default function VectorLayer({ map, vectorData, L, combinedLineData, clea
 
   return (
     <>
-      <div className="absolute top-4 right-4 z-[1001]">
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg shadow-lg p-4 mb-4 max-w-sm">
+      {/* Error message positioned separately to avoid overlap */}
+      {error && (
+        <div className="absolute top-4 right-4 z-[1002]">
+          <div className="bg-red-50 border border-red-200 rounded-lg shadow-lg p-4 max-w-sm">
             <div className="flex items-start space-x-2">
               <svg className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
@@ -502,35 +834,77 @@ export default function VectorLayer({ map, vectorData, L, combinedLineData, clea
               </div>
             </div>
           </div>
-        )}
-        
-        {currentGeoJsonData && (
+        </div>
+      )}
+      
+      {/* Export button and controls positioned separately */}
+      {currentGeoJsonData && (
+        <div className="absolute top-4 right-4 z-[1001]">
           <div className="flex flex-col space-y-2">
-            <button
-              onClick={exportGeoJSON}
-              className="flex items-center space-x-2 px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm shadow-lg"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <span>Export</span>
-            </button>
+            {/* Export button only shows when handles are locked AND not in selection mode */}
+            {isHandlesLocked && !isSelectionMode && (
+              <button
+                onClick={exportGeoJSON}
+                className="flex items-center space-x-2 px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm shadow-lg"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span>Export</span>
+              </button>
+            )}
             
             <HandlesToggle 
               layers={layersRef.current} 
+              map={map}
+              L={L}
+              isSelectionMode={isSelectionMode}
               onToggle={handleHandlesToggle}
               onFlatten={handleFlatten}
               onUnion={handleUnion}
             />
           </div>
-        )}
-      </div>
+        </div>
+      )}
       
       <PolygonSelector 
         map={map} 
         L={L} 
-        layers={flattenedLayers.length > 0 ? flattenedLayers : layersRef.current} 
-        isActive={isHandlesLocked} 
+        layers={layersRef.current} 
+        isActive={isHandlesLocked}
+        onPositionConfirmed={(data) => {
+          if (data.action === 'positionConfirmed') {
+            // Merge remaining polygons with transformed polygons
+            const allPolygons = [
+              ...data.remainingPolygons,  // Original non-selected polygons
+              ...data.transformedPolygons  // Newly positioned polygons
+            ];
+            
+            // Update layersRef with complete set
+            layersRef.current = allPolygons;
+            
+            console.log(`Position confirmed: merged ${data.remainingPolygons.length} remaining + ${data.transformedPolygons.length} transformed polygons`);
+            console.log('Updated layersRef.current length:', layersRef.current.length);
+            
+            // Clear flattened layers state so HandlesToggle knows to work with the new layer
+            setFlattenedLayers([]);
+          } else {
+            // Fallback for old format
+            if (Array.isArray(data)) {
+              layersRef.current = data;
+              console.log(`Updated layersRef with ${data.length} polygons`);
+            }
+          }
+        }}
+        onRemoveOriginalPolygons={(polygonsToRemove) => {
+          // Remove selected polygons from layersRef when they are unioned
+          layersRef.current = layersRef.current.filter(layer => !polygonsToRemove.includes(layer));
+          console.log(`Removed ${polygonsToRemove.length} selected polygons from layersRef`);
+        }}
+        onSelectionModeChange={(isSelectionMode) => {
+          setIsSelectionMode(isSelectionMode);
+          console.log('Selection mode changed:', isSelectionMode);
+        }}
       />
     </>
   );

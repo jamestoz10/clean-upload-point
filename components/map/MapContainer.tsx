@@ -73,7 +73,12 @@ export default function MapContainer({
         const map = L.map(mapRef.current!, { 
           center: center, 
           zoom: zoom,
-          zoomControl: false
+          zoomControl: false,
+          minZoom: 1,
+          maxZoom: 24,
+          zoomSnap: 0.1,
+          zoomDelta: 0.1,
+          wheelPxPerZoomLevel: 60
         });
         mapInstanceRef.current = map;
         
@@ -81,9 +86,20 @@ export default function MapContainer({
           (window as any).currentMapInstance = map;
         }
 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          maxZoom: 20,
-          attribution: '&copy; OpenStreetMap contributors',
+        // Add Esri satellite imagery as base layer with over-zoom support
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+          attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+          maxNativeZoom: 19, // provider's real max
+          maxZoom: 24,       // allow client-side over-zoom so it never goes blank
+          minZoom: 1
+        }).addTo(map);
+
+        // Add place labels on top of satellite imagery with over-zoom support
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+          attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+          maxNativeZoom: 19, // provider's real max
+          maxZoom: 24,       // allow client-side over-zoom so it never goes blank
+          minZoom: 1
         }).addTo(map);
 
         // Ensure proper sizing

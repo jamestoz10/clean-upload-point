@@ -1,35 +1,33 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import UnionHandler from './UnionHandler';
 
 interface PolygonSelectorProps {
   map: any;
   L: any;
   layers: any[];
   isActive: boolean; // Only active when main layer handles are locked
+  onPositionConfirmed?: (positionedGeoJson: any) => void;
+  onRemoveOriginalPolygons?: (polygonsToRemove: any[]) => void;
+  onSelectionModeChange?: (isSelectionMode: boolean) => void;
 }
 
-export default function PolygonSelector({ map, L, layers, isActive }: PolygonSelectorProps) {
+export default function PolygonSelector({ map, L, layers, isActive, onPositionConfirmed, onRemoveOriginalPolygons, onSelectionModeChange }: PolygonSelectorProps) {
   const [selectedPolygons, setSelectedPolygons] = useState<any[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [dragStart, setDragStart] = useState<any>(null);
   const [dragEnd, setDragEnd] = useState<any>(null);
   const [dragBounds, setDragBounds] = useState<any>(null);
+  const [unionedLayer, setUnionedLayer] = useState<any>(null);
+  const [isPositionConfirmed, setIsPositionConfirmed] = useState<boolean>(false);
+  const [remainingPolygons, setRemainingPolygons] = useState<any[]>([]);
   const selectionGroupRef = useRef<any>(null);
   const isDraggingRef = useRef<boolean>(false);
   const dragStartRef = useRef<any>(null);
+  const dragEndRef = useRef<any>(null);
 
-  // Debug layers
-  console.log('PolygonSelector: Received layers:', { 
-    layersCount: layers.length, 
-    isActive, 
-    layers: layers.map((layer, i) => ({ 
-      index: i, 
-      type: layer.constructor.name,
-      hasBounds: typeof layer.getBounds === 'function'
-    }))
-  });
 
   // Clear selection when component becomes inactive
   useEffect(() => {
@@ -61,14 +59,17 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
   }, []);
 
   const clearSelection = () => {
-    // Remove visual highlighting
-    selectedPolygons.forEach((polygon) => {
+    // Clear ALL layers, not just selected ones
+    layers.forEach((polygon) => {
       if (polygon.setStyle) {
         polygon.setStyle({
-          color: ['#092', '#0066cc', '#cc6600'][0], // Default to first color
-          weight: 3,
-          opacity: 0.9,
-          fillOpacity: 0.3
+          color: ['#0066cc', '#0066cc', '#cc6600'][0], // Default to first color
+          weight: 2,
+          opacity: 1.0,
+          fillOpacity: 0.2,
+          lineCap: 'round',
+          lineJoin: 'round',
+          dashArray: null // Explicitly remove dashed border
         });
       }
     });
@@ -82,9 +83,65 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
     setSelectedPolygons([]);
   };
 
+  const unionHandlerRef = useRef<any>(null);
+
+  const triggerUnion = () => {
+    console.log('Tick button clicked, triggering union...');
+    console.log('UnionHandler ref:', unionHandlerRef.current);
+    console.log('Selected polygons count:', selectedPolygons.length);
+    
+    if (selectedPolygons.length === 0) return;
+    
+    // Calculate remaining polygons (not selected)
+    const remaining = layers.filter(layer => !selectedPolygons.includes(layer));
+    setRemainingPolygons(remaining);
+    console.log(`Separated ${selectedPolygons.length} selected polygons from ${remaining.length} remaining polygons`);
+    
+    if (unionHandlerRef.current) {
+      unionHandlerRef.current.unionSelectedPolygons();
+      // Disable drag selection mode after union
+      setIsSelectionMode(false);
+      // Re-enable map dragging
+      if (map && map.dragging) {
+        map.dragging.enable();
+      }
+      // Clear selection
+      clearSelection();
+    } else {
+      console.error('UnionHandler ref is null!');
+    }
+  };
+
+  const triggerSplit = () => {
+    if (unionHandlerRef.current) {
+      unionHandlerRef.current.splitUnionedLayer();
+    }
+  };
+
+  const confirmPosition = () => {
+    console.log('Confirming position and merging unioned polygon...');
+    if (unionHandlerRef.current) {
+      unionHandlerRef.current.confirmPosition();
+    }
+    
+    // After position confirmation, merge remaining + transformed polygons
+    if (onPositionConfirmed && remainingPolygons.length > 0) {
+      onPositionConfirmed({
+        transformedPolygons: [], // Will be filled by UnionHandler callback
+        remainingPolygons: remainingPolygons,
+        action: 'positionConfirmed'
+      });
+    }
+  };
+
   const toggleSelectionMode = () => {
     const newMode = !isSelectionMode;
     setIsSelectionMode(newMode);
+    
+    // Notify parent of selection mode change
+    if (onSelectionModeChange) {
+      onSelectionModeChange(newMode);
+    }
     
     if (!newMode) {
       // Re-enable map dragging when exiting selection mode
@@ -103,65 +160,69 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
   };
 
   const selectPolygonsInBounds = (bounds: any) => {
-    if (!isSelectionMode) {
-      console.log('selectPolygonsInBounds: Not in selection mode');
-      return;
-    }
-
-    console.log('selectPolygonsInBounds called with:', { 
-      bounds, 
-      layersCount: layers.length,
-      boundsString: bounds.toString(),
-      boundsNorthEast: bounds.getNorthEast(),
-      boundsSouthWest: bounds.getSouthWest()
-    });
+    if (!isSelectionMode) return;
 
     const polygonsInBounds: any[] = [];
     
-    layers.forEach((layer, index) => {
+    layers.forEach((layer) => {
       try {
+        // Check if layer has getBounds method
+        if (typeof layer.getBounds !== 'function') return;
+
         const layerBounds = layer.getBounds();
+        
+        // Check if bounds are valid
+        if (!layerBounds || !layerBounds.isValid || !layerBounds.isValid()) return;
+
         const intersects = bounds.intersects(layerBounds);
-        console.log(`Layer ${index}:`, { 
-          layerBounds: layerBounds.toString(),
-          layerNorthEast: layerBounds.getNorthEast(),
-          layerSouthWest: layerBounds.getSouthWest(),
-          intersects,
-          layerType: layer.constructor.name
-        });
         
         if (intersects) {
           polygonsInBounds.push(layer);
         }
       } catch (error) {
-        console.error(`Error processing layer ${index}:`, error, layer);
+        console.error(`Error processing layer:`, error);
       }
     });
-
-    console.log('Polygons in bounds:', polygonsInBounds.length);
 
     // Add new selections
     polygonsInBounds.forEach((polygon) => {
       if (!selectedPolygons.includes(polygon)) {
-        polygon.setStyle({
-          color: '#ff0000',
-          weight: 4,
-          opacity: 1,
-          fillOpacity: 0.5,
-          dashArray: '5, 5'
-        });
+        try {
+          if (polygon.setStyle) {
+            polygon.setStyle({
+              color: '#ff0000',
+              weight: 3,
+              opacity: 1.0,
+              fillOpacity: 0.3,
+              lineCap: 'round',
+              lineJoin: 'round',
+              dashArray: '5, 5'
+            });
+          }
+        } catch (styleError) {
+          console.error('Error applying selection style:', styleError);
+        }
       }
     });
 
     // Remove selections that are no longer in bounds
     selectedPolygons.forEach((polygon) => {
       if (!polygonsInBounds.includes(polygon)) {
-        polygon.setStyle({
-          color: '#092', // Default green color
-          weight: 3,
-          opacity: 0.9,
-          fillOpacity: 0.3
-        });
+        try {
+          if (polygon.setStyle) {
+            polygon.setStyle({
+              color: '#0066cc', // Default blue color
+              weight: 2,
+              opacity: 1.0,
+              fillOpacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
+              dashArray: null // Explicitly remove dashed border
+            });
+          }
+        } catch (styleError) {
+          console.error('Error removing selection style:', styleError);
+        }
       }
     });
 
@@ -200,6 +261,7 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
     });
   };
 
+
   // Add drag selection event listeners when selection mode is active
   useEffect(() => {
     if (!isSelectionMode || !isActive || !map || !L) return;
@@ -235,16 +297,12 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
         height: 0
       });
       
-      console.log('Mouse down - drag started:', { x, y });
     };
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDraggingRef.current) {
-        console.log('Mouse move - not dragging (ref)');
         return;
       }
-      
-      console.log('Mouse move - dragging, processing...');
       
       // Prevent default behavior
       e.preventDefault();
@@ -256,9 +314,11 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       
-      console.log('Mouse move - coordinates:', { x, y, clientX: e.clientX, clientY: e.clientY, rect });
-      
+      // Keep state for UI
       setDragEnd({ x, y });
+      
+      // Keep ref for reliable latest value
+      dragEndRef.current = { x, y };
       
       // Update drag bounds using ref
       if (dragStartRef.current) {
@@ -268,7 +328,6 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
         const height = Math.abs(y - dragStartRef.current.y);
         
         setDragBounds({ left, top, width, height });
-        console.log('Mouse move - bounds:', { left, top, width, height, dragStartRef: dragStartRef.current });
       }
     };
 
@@ -288,29 +347,17 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
       // Set state for UI updates
       setIsDragging(false);
       
+      // Use refs instead of state (state may be stale)
+      const start = dragStartRef.current;
+      const end = dragEndRef.current;
+      
       // Select polygons in bounds
-      if (dragStartRef.current && dragEnd) {
+      if (start && end) {
         // Convert screen coordinates to lat/lng
-        const startContainerPoint = L.point(dragStartRef.current.x, dragStartRef.current.y);
-        const endContainerPoint = L.point(dragEnd.x, dragEnd.y);
-        const startLatLng = map.containerPointToLatLng(startContainerPoint);
-        const endLatLng = map.containerPointToLatLng(endContainerPoint);
+        const startLatLng = map.containerPointToLatLng([start.x, start.y]);
+        const endLatLng = map.containerPointToLatLng([end.x, end.y]);
         const bounds = L.latLngBounds(startLatLng, endLatLng);
         
-        console.log('Mouse up - selecting polygons in bounds:', {
-          dragStart: dragStartRef.current,
-          dragEnd,
-          startContainerPoint,
-          endContainerPoint,
-          startLatLng,
-          endLatLng,
-          bounds: bounds.toString(),
-          boundsNorthEast: bounds.getNorthEast(),
-          boundsSouthWest: bounds.getSouthWest(),
-          layersCount: layers.length,
-          mapCenter: map.getCenter(),
-          mapZoom: map.getZoom()
-        });
         
         selectPolygonsInBounds(bounds);
       }
@@ -319,26 +366,30 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
       setDragEnd(null);
       setDragBounds(null);
       dragStartRef.current = null;
+      dragEndRef.current = null;
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      // Right-click - clear all selections
+      e.preventDefault();
+      e.stopPropagation();
+      
+      clearSelection();
     };
 
     // Add event listeners to map container
     const mapContainer = map.getContainer();
     mapContainer.addEventListener('mousedown', handleMouseDown);
+    mapContainer.addEventListener('contextmenu', handleContextMenu);
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-    
-    // Add a simple test listener to see if mousemove works at all
-    const testMouseMove = (e: MouseEvent) => {
-      console.log('Test mousemove triggered:', e.clientX, e.clientY);
-    };
-    document.addEventListener('mousemove', testMouseMove);
 
     return () => {
       // Clean up event listeners
       mapContainer.removeEventListener('mousedown', handleMouseDown);
+      mapContainer.removeEventListener('contextmenu', handleContextMenu);
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
-      document.removeEventListener('mousemove', testMouseMove);
       
       // Clean up drag state
       setIsDragging(false);
@@ -385,122 +436,134 @@ export default function PolygonSelector({ map, L, layers, isActive }: PolygonSel
   }, [isSelectionMode, selectedPolygons]);
 
   if (!isActive) {
-    console.log('PolygonSelector: Component not active');
     return null;
   }
-
-  console.log('PolygonSelector: Rendering component', { isSelectionMode, isDragging, dragBounds });
 
   return (
     <>
       {/* Dashed selection rectangle */}
       {isDragging && dragBounds && (
         <div
-          className="absolute border-2 border-red-500 border-dashed bg-red-100 bg-opacity-20 pointer-events-none z-[1003]"
+          className="absolute pointer-events-none z-[1003]"
           style={{
             left: `${dragBounds.left}px`,
             top: `${dragBounds.top}px`,
             width: `${Math.max(dragBounds.width, 1)}px`,
             height: `${Math.max(dragBounds.height, 1)}px`,
-            borderStyle: 'dashed',
-            borderWidth: '2px',
-            borderColor: '#ef4444',
+            border: '2px dashed #ef4444',
+            backgroundColor: 'rgba(239, 68, 68, 0.1)',
             minWidth: '1px',
-            minHeight: '1px'
+            minHeight: '1px',
+            position: 'absolute'
           }}
         />
       )}
       
-      {/* Debug info */}
-      {isDragging && (
-        <div className="absolute top-20 left-4 bg-black text-white p-2 text-xs z-[1004]">
-          Dragging: {isDragging ? 'Yes' : 'No'}<br/>
-          Bounds: {dragBounds ? `${dragBounds.width}x${dragBounds.height}` : 'None'}<br/>
-          Start: {dragStart ? `${dragStart.x},${dragStart.y}` : 'None'}<br/>
-          End: {dragEnd ? `${dragEnd.x},${dragEnd.y}` : 'None'}
-        </div>
-      )}
       
-      <div className="absolute top-4 left-4 z-[1002]">
+      <div className="absolute top-4 left-20 z-[1002]">
         <div className="flex flex-col space-y-2">
         <button
           onClick={toggleSelectionMode}
-          className={`flex items-center space-x-2 px-3 py-2 rounded-md transition-colors text-sm shadow-lg ${
+          className={`flex items-center justify-center w-10 h-10 rounded-md transition-colors text-sm shadow-lg ${
             isSelectionMode 
               ? 'bg-red-600 text-white hover:bg-red-700' 
-              : 'bg-purple-600 text-white hover:bg-purple-700'
+              : 'bg-blue-600 text-white hover:bg-blue-700'
           }`}
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-          </svg>
-          <span>{isSelectionMode ? 'Exit Selection' : 'Select Polygons'}</span>
-        </button>
-        
-        {/* Debug button */}
-        <button
-          onClick={() => {
-            console.log('Manual test - selecting all polygons');
-            layers.forEach((layer, index) => {
-              console.log(`Layer ${index}:`, layer);
-              try {
-                layer.setStyle({
-                  color: '#ff0000',
-                  weight: 4,
-                  opacity: 1,
-                  fillOpacity: 0.5,
-                  dashArray: '5, 5'
-                });
-              } catch (error) {
-                console.error(`Error styling layer ${index}:`, error);
-              }
-            });
-          }}
-          className="flex items-center space-x-2 px-3 py-2 rounded-md bg-green-600 text-white hover:bg-green-700 text-sm shadow-lg"
-        >
-          <span>Test Select All</span>
-        </button>
-        
-        {/* Test bounds button */}
-        <button
-          onClick={() => {
-            console.log('Test bounds intersection');
-            const mapCenter = map.getCenter();
-            const testBounds = L.latLngBounds(
-              L.latLng(mapCenter.lat - 0.01, mapCenter.lng - 0.01),
-              L.latLng(mapCenter.lat + 0.01, mapCenter.lng + 0.01)
-            );
-            console.log('Test bounds:', testBounds.toString());
-            selectPolygonsInBounds(testBounds);
-          }}
-          className="flex items-center space-x-2 px-3 py-2 rounded-md bg-yellow-600 text-white hover:bg-yellow-700 text-sm shadow-lg"
-        >
-          <span>Test Bounds</span>
+          {isSelectionMode ? (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v16H4z" strokeDasharray="5,5" />
+            </svg>
+          )}
         </button>
 
-        {isSelectionMode && (
-          <div className="bg-white rounded-md shadow-lg p-3 text-xs text-gray-600">
-            <div className="font-medium mb-2">Drag Selection Mode Active</div>
-            <div className="space-y-1">
-              <div>• Drag to create selection box</div>
-              <div>• Use arrow keys to move selected</div>
-              <div>• Press ESC to clear selection</div>
-              <div>• Drag again to change selection</div>
-            </div>
-            {selectedPolygons.length > 0 && (
-              <div className="mt-2 font-medium text-blue-600">
-                {selectedPolygons.length} polygon{selectedPolygons.length !== 1 ? 's' : ''} selected
-              </div>
-            )}
-            {isDragging && (
-              <div className="mt-2 text-red-600 font-medium">
-                Dragging selection...
-              </div>
-            )}
-          </div>
+        {/* Union/Split Button */}
+        {selectedPolygons.length >= 2 && !unionedLayer && (
+          <button
+            onClick={triggerUnion}
+            className="flex items-center justify-center w-10 h-10 rounded-md bg-green-600 text-white hover:bg-green-700 transition-colors text-sm shadow-lg"
+            title="Union Selected Polygons"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </button>
         )}
+
+        {/* Confirm Position Button */}
+        {unionedLayer && !isPositionConfirmed && (
+          <button
+            onClick={confirmPosition}
+            className="flex items-center justify-center w-10 h-10 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors text-sm shadow-lg"
+            title="Confirm Position and Merge"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </button>
+        )}
+
+        {/* Split Button - Only show if position is NOT confirmed */}
+        {unionedLayer && !isPositionConfirmed && (
+          <button
+            onClick={triggerSplit}
+            className="flex items-center justify-center w-10 h-10 rounded-md bg-red-600 text-white hover:bg-red-700 transition-colors text-sm shadow-lg"
+            title="Split Unioned Polygons"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+
         </div>
       </div>
+
+      {/* Union Handler */}
+      <UnionHandler 
+        ref={unionHandlerRef}
+        map={map}
+        L={L}
+        selectedPolygons={selectedPolygons}
+        onUnionComplete={(unionLayer) => {
+          setUnionedLayer(unionLayer);
+          setIsPositionConfirmed(false);
+          console.log('Union completed:', unionLayer);
+        }}
+        onSplitComplete={(individualLayers) => {
+          setUnionedLayer(null);
+          setIsPositionConfirmed(false);
+          console.log('Split completed:', individualLayers);
+        }}
+        onPositionConfirmed={(positionedGeoJson) => {
+          setIsPositionConfirmed(true);
+          setUnionedLayer(null); // Clear unioned layer state
+          
+          // Notify parent that selection mode is ending
+          if (onSelectionModeChange) {
+            onSelectionModeChange(false);
+          }
+          
+          // Merge remaining polygons with transformed polygons
+          if (onPositionConfirmed && remainingPolygons.length > 0) {
+            onPositionConfirmed({
+              transformedPolygons: positionedGeoJson,
+              remainingPolygons: remainingPolygons,
+              action: 'positionConfirmed'
+            });
+          } else if (onPositionConfirmed) {
+            onPositionConfirmed(positionedGeoJson);
+          }
+          
+          // Clear remaining polygons state
+          setRemainingPolygons([]);
+          console.log('Position confirmed and merged');
+        }}
+      />
     </>
   );
 }

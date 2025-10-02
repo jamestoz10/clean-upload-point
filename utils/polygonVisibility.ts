@@ -158,16 +158,9 @@ export function processOverlappingPolygons(
 
   console.log(`Processed ${visibleFeatures.features.length} visible features`);
 
-  // Return original structure with processed features
+  // Return only processed polygon features (remove LineString features)
   return {
     ...geoJsonData,
-    features: [
-      ...geoJsonData.features.filter(
-        (feature: any) => 
-          feature.geometry?.type !== 'Polygon' && 
-          feature.geometry?.type !== 'MultiPolygon'
-      ), // Keep non-polygon features
-      ...visibleFeatures.features // Add processed polygon features
-    ]
+    features: visibleFeatures.features // Only keep processed polygon features
   };
 }

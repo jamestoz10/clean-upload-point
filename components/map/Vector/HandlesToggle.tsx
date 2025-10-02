@@ -1,20 +1,31 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface HandlesToggleProps {
   layers: any[];
+  map?: any;
+  L?: any;
+  isSelectionMode?: boolean;
   onToggle?: (showHandles: boolean) => void;
   onFlatten?: (flattenedLayers: any[]) => void;
   onUnion?: (unionLayer: any) => void;
 }
 
-export default function HandlesToggle({ layers, onToggle, onFlatten, onUnion }: HandlesToggleProps) {
+export default function HandlesToggle({ layers, map, L, isSelectionMode, onToggle, onFlatten, onUnion }: HandlesToggleProps) {
   // Controls both transform handles and dragging functionality
   const [showTransformHandles, setShowTransformHandles] = useState<boolean>(true);
   const [originalLayers, setOriginalLayers] = useState<any[]>([]);
   const [flattenedLayers, setFlattenedLayers] = useState<any[]>([]);
   const [originalGeometry, setOriginalGeometry] = useState<any>(null);
+
+  // Clear internal state when layers prop changes (e.g., after union operation)
+  useEffect(() => {
+    console.log('HandlesToggle: layers prop changed, clearing internal state');
+    setOriginalLayers([]);
+    setFlattenedLayers([]);
+    setOriginalGeometry(null);
+  }, [layers]);
 
   const toggleTransformHandles = async () => {
     const newState = !showTransformHandles;
@@ -65,8 +76,8 @@ export default function HandlesToggle({ layers, onToggle, onFlatten, onUnion }: 
 
   const flattenLayers = async () => {
     try {
-      // Store original layers and their geometry
-      setOriginalLayers([...layers]);
+      // Work directly with current layers prop, don't store in state
+      console.log('Flattening current layers:', layers.length);
       
       // Store the original geometry for restoration later
       const originalGeoJsonData = layers[0]?.feature || layers[0]?.toGeoJSON?.();
@@ -102,18 +113,24 @@ export default function HandlesToggle({ layers, onToggle, onFlatten, onUnion }: 
         if (Array.isArray(latlngs[0])) {
           // MultiPolygon case - create individual polygons
           latlngs.forEach((polygonCoords: any, index: number) => {
-            const map = originalLayer._map;
-            const L = (window as any).L;
-            
             if (map && L) {
               const individualPolygon = L.polygon(polygonCoords, {
-                color: '#092',  // Same green color for all individual polygons
-                weight: 3,
-                opacity: 0.9,
-                fillOpacity: 0.3,
+                color: '#0066cc',  // Same blue color for all individual polygons
+                weight: 2,
+                opacity: 1.0,
+                fillOpacity: 0.2,
+                lineCap: 'round',
+                lineJoin: 'round',
                 transform: false,  // No transform handles on individual polygons
                 draggable: false   // No dragging on individual polygons
               }).addTo(map);
+              
+              // Add CSS for crisp rendering
+              if (individualPolygon._path) {
+                individualPolygon._path.style.vectorEffect = 'non-scaling-stroke';
+                individualPolygon._path.style.shapeRendering = 'geometricPrecision';
+                individualPolygon._path.style.imageRendering = 'crisp-edges';
+              }
               
               // Do NOT enable transform handles or dragging on individual polygons
               
@@ -125,18 +142,24 @@ export default function HandlesToggle({ layers, onToggle, onFlatten, onUnion }: 
           });
         } else {
           // Single polygon case - create a copy without handles
-          const map = originalLayer._map;
-          const L = (window as any).L;
-          
           if (map && L) {
             const individualPolygon = L.polygon(latlngs, {
-              color: '#092',
-              weight: 3,
-              opacity: 0.9,
-              fillOpacity: 0.3,
+              color: '#0066cc',
+              weight: 2,
+              opacity: 1.0,
+              fillOpacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
               transform: false,  // No transform handles on individual polygons
               draggable: false   // No dragging on individual polygons
             }).addTo(map);
+            
+            // Add CSS for crisp rendering
+            if (individualPolygon._path) {
+              individualPolygon._path.style.vectorEffect = 'non-scaling-stroke';
+              individualPolygon._path.style.shapeRendering = 'geometricPrecision';
+              individualPolygon._path.style.imageRendering = 'crisp-edges';
+            }
             
             newFlattenedLayers.push(individualPolygon);
             console.log(`Created single polygon copy without handles`);
@@ -168,107 +191,139 @@ export default function HandlesToggle({ layers, onToggle, onFlatten, onUnion }: 
 
   const unionLayers = async () => {
     try {
-      // Store map reference before removing layers
-      const map = flattenedLayers[0]?._map;
-      const L = (window as any).L;
-      
       if (!map || !L) {
         console.error('Map or L not available for union operation');
         return;
       }
 
-      // Remove flattened layers from map
-      flattenedLayers.forEach((layer) => {
-        if (layer.remove) {
-          layer.remove();
-        }
-      });
+      // Remove layers from map before unioning
+      if (flattenedLayers.length > 0) {
+        // Remove flattened layers from map
+        flattenedLayers.forEach((layer) => {
+          if (layer.remove) {
+            layer.remove();
+          }
+        });
+      } else {
+        // Remove current layers from map (when working with current layers, not flattened)
+        layers.forEach((layer) => {
+          if (layer.remove) {
+            layer.remove();
+          }
+        });
+      }
 
-      // Restore the original geometry instead of unioning
-      if (originalGeometry) {
-        console.log('Restoring original geometry:', originalGeometry);
+      // Determine which layers to union
+      const layersToUnion = flattenedLayers.length > 0 ? flattenedLayers : layers;
+      
+      // Perform union operation on layers
+      if (layersToUnion.length > 0) {
+        console.log(`Unioning ${layersToUnion.length} layers (${flattenedLayers.length > 0 ? 'flattened' : 'current'})`);
         
-        // Convert GeoJSON geometry to regular polygon layer for handles support
-        const geometry = originalGeometry.geometry || originalGeometry;
-        console.log('Restoring geometry type:', geometry.type);
-        console.log('Geometry coordinates:', geometry.coordinates);
-        let restoredLayer;
+        // Import turf functions
+        const { union, featureCollection } = await import('@turf/turf');
         
-        if (geometry.type === 'MultiPolygon') {
-          // For MultiPolygon, create individual polygons and group them
-          const polygons = geometry.coordinates.map((polygonCoords: any) => {
-            // polygonCoords is an array of rings (exterior + holes)
-            const latlngs = polygonCoords.map((ring: any) => 
-              ring.map((coord: any) => [coord[1], coord[0]])
-            );
-            return L.polygon(latlngs, {
-              color: '#092',
-              weight: 3,
-              opacity: 0.9,
-              fillOpacity: 0.3,
+        // Convert all layers to GeoJSON features
+        const features = layersToUnion.map((layer) => {
+          try {
+            const geoJson = layer.toGeoJSON();
+            // Check if the feature has valid geometry
+            if (geoJson && geoJson.geometry && geoJson.geometry.type) {
+              return geoJson;
+            }
+            return null;
+          } catch (error) {
+            console.error('Error converting layer to GeoJSON:', error);
+            return null;
+          }
+        }).filter(Boolean).filter((feature: any) => 
+          feature && feature.geometry && feature.geometry.type && 
+          (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon')
+        );
+
+        if (features.length > 0) {
+          // Create feature collection and union
+          const fc = featureCollection(features as any);
+          const unionResult = union(fc as any);
+          
+          if (unionResult) {
+            console.log('Union result:', unionResult);
+            
+            // Convert GeoJSON coordinates to Leaflet format
+            const geometry = unionResult.geometry;
+            let latlngs;
+            
+            if (geometry.type === 'MultiPolygon') {
+              latlngs = geometry.coordinates.map((poly: any) => L.GeoJSON.coordsToLatLngs(poly[0]));
+            } else if (geometry.type === 'Polygon') {
+              latlngs = [L.GeoJSON.coordsToLatLngs(geometry.coordinates[0])];
+            } else {
+              console.error('Unexpected geometry type:', (geometry as any).type);
+              return;
+            }
+            
+            // Create unioned layer
+            const unionedLayer = L.polygon(latlngs, {
+              color: '#0066cc',
+              weight: 2,
+              opacity: 1.0,
+              fillOpacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
               transform: true,
-              draggable: true
-            });
-          });
-          
-          // Create a feature group to hold all polygons
-          restoredLayer = L.featureGroup(polygons).addTo(map);
-          
-        } else if (geometry.type === 'Polygon') {
-          // For single Polygon, create regular polygon layer (handle holes)
-          const latlngs = geometry.coordinates.map((ring: any) => 
-            ring.map((coord: any) => [coord[1], coord[0]])
-          );
-          restoredLayer = L.polygon(latlngs, {
-            color: '#092',
-            weight: 3,
-            opacity: 0.9,
-            fillOpacity: 0.3,
-            transform: true,
-            draggable: true
-          }).addTo(map);
-        }
-        
-        // Enable transform handles on the restored layer
-        if (restoredLayer.transform) {
-          restoredLayer.transform.enable();
-          restoredLayer.transform.setOptions({ 
-            rotation: true, 
-            scaling: true,
-            uniformScaling: true,
-            strokeWidth: 3
-          });
-        } else if (restoredLayer.eachLayer) {
-          // For feature groups, enable handles on each polygon
-          restoredLayer.eachLayer((layer: any) => {
-            if (layer.transform) {
-              layer.transform.enable();
-              layer.transform.setOptions({ 
+              draggable: true,
+              pane: 'overlayPane'
+            }).addTo(map);
+            
+            // Apply crisp rendering CSS
+            if (unionedLayer._path) {
+              unionedLayer._path.style.vectorEffect = 'non-scaling-stroke';
+              unionedLayer._path.style.shapeRendering = 'geometricPrecision';
+              unionedLayer._path.style.imageRendering = 'crisp-edges';
+            }
+            
+            // Enable transform handles
+            if (unionedLayer.transform) {
+              unionedLayer.transform.setOptions({ 
                 rotation: true, 
                 scaling: true,
                 uniformScaling: true,
                 strokeWidth: 3
               });
+              
+              if (L.Util && L.Util.requestAnimFrame) {
+                L.Util.requestAnimFrame(() => {
+                  if (!unionedLayer.transform._enabled) {
+                    unionedLayer.transform.enable();
+                  }
+                });
+              } else {
+                if (!unionedLayer.transform._enabled) {
+                  unionedLayer.transform.enable();
+                }
+              }
             }
-            if (layer.dragging) {
-              layer.dragging.enable();
+            
+            // Enable dragging
+            if (unionedLayer.dragging && !unionedLayer.dragging._enabled) {
+              unionedLayer.dragging.enable();
             }
-          });
-        }
-        
-        // Enable dragging on the restored layer
-        if (restoredLayer.dragging) {
-          restoredLayer.dragging.enable();
-        }
-        
-        console.log('Restored original layer with handles enabled');
-        
-        // Notify parent of restored layer
-        if (onUnion) {
-          onUnion(restoredLayer);
+            
+            // Update state
+            setOriginalLayers([unionedLayer]);
+            setFlattenedLayers([]);
+            setOriginalGeometry(null);
+            
+            // Notify parent
+            if (onUnion) {
+              onUnion(unionedLayer);
+            }
+            
+            console.log('Successfully unioned all layers including positioned layer');
+          }
         }
       } else {
-        console.error('No original geometry stored to restore');
+        console.error('No layers to union');
       }
       
       // Clear flattened layers
@@ -280,22 +335,27 @@ export default function HandlesToggle({ layers, onToggle, onFlatten, onUnion }: 
   };
 
   return (
-    <button
-      onClick={toggleTransformHandles}
-      className={`flex items-center space-x-2 px-3 py-2 rounded-md transition-colors text-sm shadow-lg ${
-        showTransformHandles 
-          ? 'bg-green-600 text-white hover:bg-green-700' 
-          : 'bg-gray-600 text-white hover:bg-gray-700'
-      }`}
-    >
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        {showTransformHandles ? (
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-        ) : (
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0m-4 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
-        )}
-      </svg>
-      <span>{showTransformHandles ? 'Flatten & Lock' : 'Union & Unlock'}</span>
-    </button>
+    <>
+      {/* Only show button when not in selection mode */}
+      {!isSelectionMode && (
+        <button
+          onClick={toggleTransformHandles}
+          className={`flex items-center space-x-2 px-3 py-2 rounded-md transition-colors text-sm shadow-lg ${
+            showTransformHandles 
+              ? 'bg-green-600 text-white hover:bg-green-700' 
+              : 'bg-gray-600 text-white hover:bg-gray-700'
+          }`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            {showTransformHandles ? (
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            ) : (
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11V7a4 4 0 118 0m-4 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
+            )}
+          </svg>
+          <span>{showTransformHandles ? 'Flatten & Lock' : 'Union & Unlock'}</span>
+        </button>
+      )}
+    </>
   );
 }
